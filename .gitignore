@@ -6,3 +6,5 @@ venv/
 reports/*.md
 *.egg-info/
 .DS_Store
+logs/
+seed/poison_ids.txt
