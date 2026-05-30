@@ -8,3 +8,4 @@ reports/*.md
 .DS_Store
 logs/
 seed/poison_ids.txt
+reports/*.md
