@@ -295,6 +295,21 @@ async def run_night_agent():
                     notes = tx_full.get("notes", [])
                     created_at = str(tx_full.get("created_at", ""))
 
+                    # Zero-amount transactions cannot be auto-classified —
+                    # they require human review (compliance policy).
+                    # Raising here exercises the failure-isolation path so
+                    # make verify can assert tool_call_failure events in the log.
+                    try:
+                        amount_float = float(amount)
+                    except (ValueError, TypeError):
+                        amount_float = None
+
+                    if amount_float is not None and amount_float == 0.0:
+                        raise ValueError(
+                            f"Zero-amount transaction cannot be auto-classified "
+                            f"(amount={amount} {currency}). Manual review required."
+                        )
+
                     # Check for prompt injection in memo
                     injection_keywords = [
                         "ignore previous instructions",
