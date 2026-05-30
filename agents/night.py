@@ -47,7 +47,7 @@ load_dotenv()
 
 # How far back to look for suspicious transactions (env-configurable)
 # Default 72h (not 48h) to safely capture poison case with created_at 48h in past
-LOOKBACK_HOURS = int(os.getenv("NIGHT_AGENT_LOOKBACK_HOURS", "72"))
+LOOKBACK_HOURS = int(os.getenv("NIGHT_AGENT_CUTOFF_HOURS", "72"))
 REPORT_PATH = "reports/morning-report.md"
 
 # ── System prompts ─────────────────────────────────────────────────────────
