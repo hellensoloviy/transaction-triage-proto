@@ -37,6 +37,7 @@ from agents.loop import (
     log_skip,
     log_sub_agent_spawn,
     execute_mcp_tool,
+    LOG_FILE,
     MODEL,
     MAX_TOKENS,
     MAX_RETRIES,
@@ -220,6 +221,12 @@ async def run_night_agent():
     5. Save report via write_report tool
     """
     run_id = str(uuid.uuid4())[:8]
+
+    # Clear log so make night-run and make verify read only this run's events.
+    # Day Agent does the same via run_agent_loop. Sub-agents use a different
+    # agent_name and append rather than clear, so they don't wipe these events.
+    open(LOG_FILE, "w").close()
+
     log_agent_start(run_id, "night-agent")
 
     print(f"\n{'='*60}")
