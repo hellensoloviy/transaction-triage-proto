@@ -25,7 +25,7 @@ load_dotenv()
 # ── Configuration ──────────────────────────────────────────────────────────
 
 SEED = int(os.getenv("SEED_RANDOM_SEED", "17"))
-TOTAL_TRANSACTIONS = 20 # less for test purpose, need 200 for the final. 
+TOTAL_TRANSACTIONS = int(os.getenv("SEED_TOTAL_TRANSACTIONS", "200")) # need 200 for the final. 
 POISON_COUNT = 8
 
 # ── Realistic data pools ───────────────────────────────────────────────────

@@ -12,12 +12,12 @@ The loop handles:
 - Sending tool results back
 - Structured JSON logging of every step
 - Retry with exponential backoff on API failures
+- Prompt caching on system prompt (cached tokens don't count toward ITPM)
 """
 import json
 import asyncio
 import os
 import sys
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -195,6 +195,7 @@ async def run_agent_loop(
     initial_message: str,
     agent_name: str,
     run_id: Optional[str] = None,
+    max_tokens_override: Optional[int] = None,
 ) -> str:
     """
     Core ReAct loop — reason, act, observe, repeat.
@@ -221,6 +222,10 @@ async def run_agent_loop(
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     tools = await get_mcp_tools(session)
 
+    # per-agent max_tokens: Day Agent passes a lower ceiling
+    # since its responses are short. Night Agent uses the global default.
+    effective_max_tokens = max_tokens_override if max_tokens_override else MAX_TOKENS
+
     messages = [
         {"role": "user", "content": initial_message}
     ]
@@ -232,6 +237,19 @@ async def run_agent_loop(
         "model": MODEL,
     })
 
+    # Prompt caching on system prompt.
+    # The system prompt is sent on every iteration of the loop — by marking
+    # it ephemeral, Anthropic caches it and cached tokens do NOT count toward
+    # your ITPM rate limit. On a 200-transaction run with 80+ iterations this
+    # is the single biggest lever for staying under Tier 1 limits.
+    cached_system = [
+        {
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
     for iteration in range(MAX_ITERATIONS):
         # ── Call Claude with retry and backoff ─────────────────────────────
         response = None
@@ -241,26 +259,31 @@ async def run_agent_loop(
             try:
                 response = client.messages.create(
                     model=MODEL,
-                    max_tokens=MAX_TOKENS,
-                    system=system_prompt,
+                    max_tokens=effective_max_tokens,
+                    system=cached_system,          # cached system prompt
                     tools=tools,
                     messages=messages,
                 )
                 break  # success
 
             except anthropic.RateLimitError as e:
-                wait = 60  # flat 60 seconds, every attempt
+                # read the actual retry-after from response headers
+                retry_after = 60  # safe fallback
+                if hasattr(e, "response") and e.response is not None:
+                    retry_after = int(e.response.headers.get("retry-after", 60))
+
                 log_event({
                     "event": "api_rate_limit",
                     "run_id": run_id,
                     "attempt": attempt + 1,
-                    "wait_seconds": wait,
+                    "wait_seconds": retry_after,
                 })
-                time.sleep(wait)
+                
+                await asyncio.sleep(retry_after)
                 last_error = e
 
             except anthropic.APIError as e:
-                wait = 30 * (attempt + 1)  # give it real breathing room
+                wait = 30 * (attempt + 1)
                 log_event({
                     "event": "api_error",
                     "run_id": run_id,
@@ -268,7 +291,8 @@ async def run_agent_loop(
                     "error": str(e),
                     "wait_seconds": wait,
                 })
-                time.sleep(wait)
+                # await asyncio.sleep — not time.sleep
+                await asyncio.sleep(wait)
                 last_error = e
 
         if response is None:
@@ -298,41 +322,67 @@ async def run_agent_loop(
                 "content": response.content
             })
 
-            # Execute each tool call
+            # Collect ALL tool_use blocks first before executing any.
+            # The Anthropic API requires every tool_use block to have a matching
+            # tool_result in the very next user message. If we iterate response.content
+            # directly (which mixes text + tool_use blocks) and anything raises mid-loop,
+            # we can end up sending fewer results than tool calls — causing the 400 error:
+            # "tool_use ids were found without tool_result blocks immediately after".
+            tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
             tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    tool_name = block.name
-                    tool_input = block.input
 
-                    log_event({
-                        "event": "tool_dispatch",
-                        "run_id": run_id,
-                        "tool": tool_name,
-                        "iteration": iteration,
+            for block in tool_use_blocks:
+                tool_name = block.name
+                tool_input = block.input
+
+                log_event({
+                    "event": "tool_dispatch",
+                    "run_id": run_id,
+                    "tool": tool_name,
+                    "iteration": iteration,
+                })
+
+                try:
+                    result_text = await execute_mcp_tool(
+                        session, tool_name, tool_input, run_id
+                    )
+                    # await asyncio.sleep between tool calls
+                    await asyncio.sleep(0.5)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result_text,
                     })
 
-                    try:
-                        result_text = await execute_mcp_tool(
-                            session, tool_name, tool_input, run_id
-                        )
-                        # Respect API rate limits between tool calls
-                        await asyncio.sleep(0.5)
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": result_text,
-                        })
+                except Exception as e:
+                    # Tool failed — return error to Claude so it can decide.
+                    # We MUST still append a result for this block_id or the
+                    # API will reject the next request with a 400.
+                    error_text = f"ERROR: Tool {tool_name} failed: {str(e)}"
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": error_text,
+                        "is_error": True,
+                    })
 
-                    except Exception as e:
-                        # Tool failed — return error to Claude so it can decide
-                        error_text = f"ERROR: Tool {tool_name} failed: {str(e)}"
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": error_text,
-                            "is_error": True,
-                        })
+            # Sanity check — guarantee every tool_use_id has a result.
+            # This is a safety net; the loop above should already cover all cases.
+            result_ids = {r["tool_use_id"] for r in tool_results}
+            for block in tool_use_blocks:
+                if block.id not in result_ids:
+                    log_event({
+                        "event": "missing_tool_result_patched",
+                        "run_id": run_id,
+                        "tool_use_id": block.id,
+                        "tool": block.name,
+                    })
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": "ERROR: result missing — patched as fallback",
+                        "is_error": True,
+                    })
 
             # Add tool results to message history
             messages.append({
@@ -341,23 +391,61 @@ async def run_agent_loop(
             })
 
         elif response.stop_reason == "max_tokens":
-            # Hit token limit mid-response — add what we have and continue
+            # Hit token limit mid-response.
+            # CRITICAL: if Claude was mid-tool-call when it hit the limit,
+            # response.content contains tool_use blocks. We MUST send matching
+            # tool_result blocks in the next message or the API returns 400.
+            # Sending a plain "continue" text message with dangling tool_use
+            # blocks in history is what was causing the repeated 400 errors.
             log_event({
                 "event": "max_tokens_hit",
                 "run_id": run_id,
                 "iteration": iteration,
             })
-            messages.append({
-                "role": "assistant",
-                "content": response.content
-            })
-            messages.append({
-                "role": "user",
-                "content": [{"type": "text", "text": "Please continue where you left off."}]
-            })
+
+            tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
+
+            if tool_use_blocks:
+                # Claude was mid-tool-call — execute the tools and respond properly
+                messages.append({
+                    "role": "assistant",
+                    "content": response.content
+                })
+                tool_results = []
+                for block in tool_use_blocks:
+                    try:
+                        result_text = await execute_mcp_tool(
+                            session, block.name, block.input, run_id
+                        )
+                        await asyncio.sleep(0.5)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result_text,
+                        })
+                    except Exception as e:
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": f"ERROR: {str(e)}",
+                            "is_error": True,
+                        })
+                messages.append({
+                    "role": "user",
+                    "content": tool_results
+                })
+            else:
+                # Pure text truncation — safe to just ask Claude to continue
+                messages.append({
+                    "role": "assistant",
+                    "content": response.content
+                })
+                messages.append({
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Please continue where you left off."}]
+                })
 
         else:
-            # FIX: was missing indentation — log_event and break were outside the else block
             log_event({
                 "event": "unexpected_stop_reason",
                 "run_id": run_id,
