@@ -35,8 +35,8 @@ load_dotenv()
 
 MODEL = os.getenv("MODEL_NAME", "claude-sonnet-4-6")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "4096"))
-MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "50"))
-MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "80"))
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "5"))
 
 # ── Logging ────────────────────────────────────────────────────────────────
 

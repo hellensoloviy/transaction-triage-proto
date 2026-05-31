@@ -24,15 +24,20 @@ app/
 mcp_server/
     server.py        — Custom MCP server exposing 5 tools to agents
 agents/
-    loop.py          — Shared ReAct tool-use loop (Anthropic SDK directly)
+    loop.py          — Shared ReAct tool-use loop (Anthropic SDK directly, no frameworks)
     day.py           — Day Agent: processes pending queue
-    night.py         — Night Agent: batch review + morning report
+    night.py         — Night Agent: batch review + morning report + sub-agent
 seed/
     seeder.py        — Deterministic seeder, 200 transactions, seed=17
+    poison_ids.txt   — Written by make seed, read by make verify
 tests/
-    test_failure_isolation.py  — Tests for poison case handling
-    verify.py        — make verify script
-reports/             — Morning reports saved here as markdown
+    test_agent_loop.py     — Loop imports, logging, configuration
+    test_mcp_server.py     — MCP tool registration and integration
+    test_night_agent.py    — Failure isolation, injection detection, status parsing
+    verify.py              — End-to-end verification suite
+reports/             — Morning reports saved here as markdown files
+logs/
+    agent_run.jsonl  — Structured JSONL log, one event per line
 ```
 
 ---
@@ -41,18 +46,27 @@ reports/             — Morning reports saved here as markdown
 
 1. Agents call MCP tools only — never raw HTTP, never direct DB
 2. MCP server calls FastAPI — the only thing that touches Postgres
-3. FastAPI owns the database — schema creation, migrations, queries
-4. All config from environment variables — never hardcoded
+3. FastAPI owns the database — schema creation, queries, validation
+4. All config from environment variables — never hardcoded values in code
 
 ---
 
 ## Environment variables
 
+See `.env.example` for the full list. Key ones:
+
 ```
-ANTHROPIC_API_KEY     — required, Anthropic API key
-DATABASE_URL          — Postgres connection string
-NIGHT_AGENT_CUTOFF_HOURS — how far back Night Agent looks (default 24)
-SEED_RANDOM_SEED      — random seed for seeder (default 17)
+ANTHROPIC_API_KEY        — required, your Anthropic API key
+DATABASE_URL             — Postgres connection string
+MODEL_NAME               — Claude model (default: claude-sonnet-4-6)
+MAX_TOKENS               — global output token ceiling (default: 4096)
+DAY_AGENT_MAX_TOKENS     — Day Agent output ceiling, lower since responses are short (default: 1024)
+DAY_AGENT_BATCH_SIZE     — transactions per batch for Day Agent (default: 50)
+MAX_ITERATIONS           — safety ceiling on agent loop (default: 80)
+MAX_RETRIES              — API call retries before giving up (default: 5)
+NIGHT_AGENT_CUTOFF_HOURS — how far back Night Agent looks (default: 72)
+SEED_RANDOM_SEED         — random seed for seeder (default: 17)
+SEED_TOTAL_TRANSACTIONS  — total transactions to seed (default: 200)
 ```
 
 ---
@@ -63,32 +77,74 @@ SEED_RANDOM_SEED      — random seed for seeder (default 17)
 
 The Night Agent processes suspicious transactions one by one. For each transaction:
 
-1. Try to process it
+1. Try to fetch and assess it
 2. If ANY exception occurs:
-   - Log the failure with transaction ID and error details
-   - Call set_transaction_status with status=needs-human-review and a note explaining the failure
+   - Log the failure as a structured JSON event (`tool_call_failure`) with transaction ID and error details
+   - Log a skip event (`skip_item`) with the reason
+   - Call `set_transaction_status` with `status=needs-human-review` and a note explaining what failed
    - Continue to the next transaction — never halt
-3. If the agent cannot continue at all (total failure): emit a partial report covering whatever was completed
+3. If even the status update fails — log that too and move on
+4. Always produce a report at the end — even if every transaction failed, a partial report is emitted
 
 The Night Agent must never crash without output. A partial report is always better than no report.
+
+`make verify` specifically asserts that at least one `tool_call_failure` and one `skip_item` event appear in `logs/agent_run.jsonl` after the Night Agent runs, so these paths are tested on every verify run.
 
 ---
 
 ## Prompt injection defense
 
-The Night Agent prompt explicitly instructs Claude to ignore any instructions embedded in transaction data. If a memo or counterparty field contains instruction-like text, the agent must:
+Both agents have explicit system prompt instructions to ignore any instructions embedded in transaction data. The Night Agent additionally runs a Python-level keyword check on the memo field before the text reaches Claude — so the model never sees injection attempts framed as user instructions.
+
+If a memo or counterparty field contains instruction-like text, the agent must:
 - Not follow those instructions
 - Mark the transaction suspicious
 - Add a note explaining the injection attempt was detected
 
+The prompt injection poison case must never be classified clean — `make verify` asserts this specifically.
+
 ---
 
-## Gotchas I hit
+## Gotchas
 
-- []
+**Port 5432 conflict on `make up`**
+If you have Postgres running locally (Homebrew or Postgres.app), Docker will fail to bind port 5432 with a "port is already allocated" error. Diagnose with `lsof -i :5432` and stop the local instance first.
+
+```bash
+# Homebrew
+brew services stop postgresql@16   # adjust version as needed
+
+# Postgres.app — quit from the menu bar
+```
+
+**`make seed` prompts before clearing**
+If the database already has transactions, the seeder asks `"Clear and re-seed? (y/n)"` before wiping. This is intentional — it prevents accidentally destroying a day-run dataset you want to keep. Answer `y` to clear and reseed. If you run `make seed` non-interactively (e.g. in a script), pipe in the answer: `echo y | make seed`.
+
+**`make verify` wipes the database**
+The verify script clears all transactions and seeds its own 8 poison cases before running the Night Agent. Don't run it mid-workflow if you want to keep your day-run data. Run it as a final check after everything else is confirmed working.
+
+**Logs are cleared on each primary agent run**
+`logs/agent_run.jsonl` is truncated at the start of every Day Agent or Night Agent run so `make verify` only reads the current run's events. Sub-agents (e.g. the report writer) use a different `agent_name` so they append to the log rather than clearing it.
+
+**`make clean` removes all reports**
+`make clean` deletes everything in `reports/`. If you want to keep a morning report, copy it somewhere else before running clean. Reports accumulate quickly across multiple runs, so clean is the right place to clear them.
+
+**`tool_use` / `tool_result` mismatch (400 errors)**
+The Anthropic API requires every `tool_use` block to have a matching `tool_result` block in the very next message. This can break in two ways:
+- If Claude batches many tool calls in one turn and the response hits `max_tokens` mid-call, the truncated response contains `tool_use` blocks with no results. The loop handles this by detecting tool_use blocks in the `max_tokens` branch and executing them before continuing.
+- Any exception mid-loop that skips appending a result for a tool_use block will corrupt the message history. The loop guards against this with a sanity check that patches in a fallback error result for any missing IDs.
+
+**Prompt caching on system prompt**
+Both agents send the system prompt marked `cache_control: ephemeral`. Cached tokens do not count toward your ITPM rate limit, which significantly increases throughput on long runs. This is the main reason the 200-transaction day run is feasible on Tier 1.
 
 ---
 
 ## Things I would do differently with more time
 
-- []
+- **Proper JSON from MCP server.** The MCP server currently returns Python `str()` representations of dicts, which the agents parse with `ast.literal_eval()`. This works but is fragile — it breaks on strings containing single quotes and is not cross-language compatible. The fix is `json.dumps()` in the server with a custom encoder for `Decimal` and `UUID`, and `json.loads()` in the agents.
+
+- **Alembic migrations.** Schema is created via SQLAlchemy `create_all()` on startup. In production this is dangerous — schema changes require manual intervention. Alembic would give proper migration tracking.
+
+- **Smarter Day Agent batching.** The Day Agent loop has a high `MAX_ITERATIONS` ceiling to handle 200 transactions. A more efficient approach would pre-classify transactions in larger batches per Claude call, reducing total API round-trips and making the ceiling less necessary.
+
+- **Persistent MCP server.** The MCP server is spawned as a subprocess on every agent run. A persistent server with connection pooling would remove the startup latency on each run.
