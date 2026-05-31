@@ -3,6 +3,8 @@ FastAPI service — the data plane.
 Agents never call this directly — they go through the MCP server.
 This service owns the database and exposes clean REST endpoints.
 """
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
@@ -15,19 +17,22 @@ import os
 
 from app.database import get_db, create_tables, Transaction, Report
 
+
+# ── Startup / shutdown ─────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Create tables on startup. Nothing to tear down on shutdown."""
+    create_tables()
+    yield
+
+
 app = FastAPI(
     title="Transaction Triage API",
     description="Data plane for the transaction triage system",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
-
-
-# ── Startup ────────────────────────────────────────────────────────────────
-
-@app.on_event("startup")
-def on_startup():
-    """Create tables on startup if they don't exist."""
-    create_tables()
 
 
 # ── Pydantic models (request/response shapes) ──────────────────────────────
