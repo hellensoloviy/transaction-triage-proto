@@ -14,8 +14,9 @@ up:
 	@sleep 3
 	@test -d venv || python3 -m venv venv
 	@$(PIP) install -r requirements.txt -q
+	@mkdir -p logs
 	@echo "Starting FastAPI service..."
-	@./venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+	@./venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 > logs/uvicorn.log 2>&1 &
 	@sleep 2
 	@echo "✓ System is up. API at http://localhost:8000"
 
