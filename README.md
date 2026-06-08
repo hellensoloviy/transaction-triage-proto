@@ -2,7 +2,7 @@
 
 A fintech compliance triage system built with two cooperating Claude agents, a custom MCP server, FastAPI, and Postgres. The Day Agent classifies incoming transactions in real time; the Night Agent reviews flagged items overnight and produces a morning report.
 
-Built for the XBO AI Engineer take-home assignment.
+Built for the AI Engineer take-home assignment.
 
 ---
 
