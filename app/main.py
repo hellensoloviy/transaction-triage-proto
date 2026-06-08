@@ -115,7 +115,7 @@ def health_check():
 def list_transactions(
     status: Optional[str] = Query(None, description="Filter by status"),
     since: Optional[str] = Query(None, description="ISO timestamp — only return transactions after this time"),
-    limit: int = Query(100, le=500),
+    limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db)
 ):
     """
