@@ -13,7 +13,6 @@ Key behaviors:
 Run with: make night-run
 Or:       python3 agents/night.py
 """
-import ast
 import asyncio
 import json
 import os
@@ -251,8 +250,7 @@ async def run_night_agent():
                 metrics_raw = await execute_mcp_tool(
                     session, "get_risk_metrics", {"since": since, "top_n": 10}, run_id
                 )
-                # ast.literal_eval is safe for Python dict strings — eval is not
-                metrics = ast.literal_eval(metrics_raw) if metrics_raw else {}
+                metrics = json.loads(metrics_raw) if metrics_raw else {}
                 print(f"  Metrics fetched: {metrics}")
             except Exception as e:
                 log_tool_failure(run_id, "get_risk_metrics", str(e))
@@ -269,7 +267,7 @@ async def run_night_agent():
                     {"status": "suspicious", "since": since, "limit": 200},
                     run_id,
                 )
-                parsed = ast.literal_eval(txns_raw) if txns_raw else {}
+                parsed = json.loads(txns_raw) if txns_raw else {}
                 # MCP server wraps list in {"transactions": [...]}
                 if isinstance(parsed, dict):
                     transactions = parsed.get("transactions", [])
@@ -302,7 +300,7 @@ async def run_night_agent():
                         {"transaction_id": tx_id},
                         run_id,
                     )
-                    tx_full_parsed = ast.literal_eval(tx_full_raw) if tx_full_raw else {}
+                    tx_full_parsed = json.loads(tx_full_raw) if tx_full_raw else {}
                     # get_transaction may return the dict directly or wrapped
                     if isinstance(tx_full_parsed, dict) and "id" in tx_full_parsed:
                         tx_full = tx_full_parsed

@@ -8,6 +8,7 @@ Run with: python mcp_server/server.py
 The agent loop starts this as a subprocess and communicates via stdio.
 """
 import asyncio
+import json
 import os
 import sys
 import httpx
@@ -213,7 +214,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             result = await api_get("/transactions", params=params)
             return [types.TextContent(
                 type="text",
-                text=str(result)
+                text=json.dumps(result)
             )]
 
         elif name == "get_transaction":
@@ -224,7 +225,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             result = await api_get(f"/transactions/{transaction_id}")
             return [types.TextContent(
                 type="text",
-                text=str(result)
+                text=json.dumps(result)
             )]
 
         elif name == "set_transaction_status":
@@ -250,7 +251,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             )
             return [types.TextContent(
                 type="text",
-                text=str(result)
+                text=json.dumps(result)
             )]
 
         elif name == "get_risk_metrics":
@@ -263,7 +264,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             result = await api_get("/metrics", params=params)
             return [types.TextContent(
                 type="text",
-                text=str(result)
+                text=json.dumps(result)
             )]
 
         elif name == "write_report":
@@ -280,7 +281,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             )
             return [types.TextContent(
                 type="text",
-                text=str(result)
+                text=json.dumps(result)
             )]
 
         else:

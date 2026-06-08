@@ -96,8 +96,7 @@ async def run_day_agent():
                     {"status": "pending", "limit": 500},
                     run_id,
                 )
-                import ast
-                parsed = ast.literal_eval(raw) if raw else {}
+                parsed = json.loads(raw) if raw else {}
                 if isinstance(parsed, dict):
                     all_txns = parsed.get("transactions", [])
                 elif isinstance(parsed, list):
