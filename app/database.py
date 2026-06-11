@@ -15,7 +15,9 @@ import uuid
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://triage:triage_pass@localhost:5432/transaction_triage")
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is not set — check your .env file")
 
 # Engine connects Python to Postgres
 engine = create_engine(DATABASE_URL, echo=False)
