@@ -25,6 +25,7 @@ from typing import Optional
 import anthropic
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from typing import Any, Callable
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
@@ -133,6 +134,34 @@ def log_sub_agent_spawn(run_id: str, parent_agent: str, sub_agent_purpose: str):
         "parent_agent": parent_agent,
         "sub_agent_purpose": sub_agent_purpose,
     })
+
+
+# ── Retry helper ──────────────────────────────────────────────────────────
+
+async def call_with_retry(fn: Callable[[], Any], run_id: str, extra: dict = None) -> Any:
+    """
+    Call a synchronous Anthropic SDK function with exponential backoff.
+    Handles RateLimitError (reads retry-after header) and generic APIError.
+    Raises on exhaustion.
+    """
+    extra = extra or {}
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            return fn()
+        except anthropic.RateLimitError as e:
+            retry_after = 60
+            if hasattr(e, "response") and e.response is not None:
+                retry_after = int(e.response.headers.get("retry-after", 60))
+            log_event({"event": "api_rate_limit", "run_id": run_id, "attempt": attempt + 1, "wait_seconds": retry_after, **extra})
+            await asyncio.sleep(retry_after)
+            last_error = e
+        except anthropic.APIError as e:
+            wait = 30 * (attempt + 1)
+            log_event({"event": "api_error", "run_id": run_id, "attempt": attempt + 1, "error": str(e), "wait_seconds": wait, **extra})
+            await asyncio.sleep(wait)
+            last_error = e
+    raise Exception(f"Claude API failed after {MAX_RETRIES} attempts: {last_error}")
 
 
 # ── MCP tool helpers ───────────────────────────────────────────────────────
@@ -252,51 +281,16 @@ async def run_agent_loop(
 
     for iteration in range(MAX_ITERATIONS):
         # ── Call Claude with retry and backoff ─────────────────────────────
-        response = None
-        last_error = None
-
-        for attempt in range(MAX_RETRIES):
-            try:
-                response = client.messages.create(
-                    model=MODEL,
-                    max_tokens=effective_max_tokens,
-                    system=cached_system,          # cached system prompt
-                    tools=tools,
-                    messages=messages,
-                )
-                break  # success
-
-            except anthropic.RateLimitError as e:
-                # read the actual retry-after from response headers
-                retry_after = 60  # safe fallback
-                if hasattr(e, "response") and e.response is not None:
-                    retry_after = int(e.response.headers.get("retry-after", 60))
-
-                log_event({
-                    "event": "api_rate_limit",
-                    "run_id": run_id,
-                    "attempt": attempt + 1,
-                    "wait_seconds": retry_after,
-                })
-                
-                await asyncio.sleep(retry_after)
-                last_error = e
-
-            except anthropic.APIError as e:
-                wait = 30 * (attempt + 1)
-                log_event({
-                    "event": "api_error",
-                    "run_id": run_id,
-                    "attempt": attempt + 1,
-                    "error": str(e),
-                    "wait_seconds": wait,
-                })
-                # await asyncio.sleep — not time.sleep
-                await asyncio.sleep(wait)
-                last_error = e
-
-        if response is None:
-            raise Exception(f"Claude API failed after {MAX_RETRIES} attempts: {last_error}")
+        response = await call_with_retry(
+            lambda: client.messages.create(
+                model=MODEL,
+                max_tokens=effective_max_tokens,
+                system=cached_system,
+                tools=tools,
+                messages=messages,
+            ),
+            run_id=run_id,
+        )
 
         # ── Check stop reason ──────────────────────────────────────────────
         if response.stop_reason == "end_turn":

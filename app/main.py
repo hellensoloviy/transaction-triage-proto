@@ -212,39 +212,42 @@ def get_metrics(
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid timestamp format: {since}")
 
-    transactions = query.all()
+    # Aggregate counts and totals in SQL — avoids loading all rows into memory
+    status_rows = (
+        query.with_entities(
+            Transaction.status,
+            func.count(Transaction.id).label("cnt"),
+            func.sum(Transaction.amount).label("total"),
+        )
+        .group_by(Transaction.status)
+        .all()
+    )
 
-    # Count and total amount by status
-    status_counts = {}
-    status_amounts = {}
-    counterparty_suspicious = {}
+    status_counts = {row.status: row.cnt for row in status_rows}
+    status_amounts = {row.status: float(row.total or 0) for row in status_rows}
+    total_transactions = sum(status_counts.values())
 
-    for tx in transactions:
-        status = tx.status
-        amount = float(tx.amount or 0)
-
-        status_counts[status] = status_counts.get(status, 0) + 1
-        status_amounts[status] = status_amounts.get(status, 0.0) + amount
-
-        if status == "suspicious":
-            cp = tx.counterparty or "unknown"
-            counterparty_suspicious[cp] = counterparty_suspicious.get(cp, 0) + 1
-
-    # Top N counterparties by suspicious count
-    top_counterparties = sorted(
-        counterparty_suspicious.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )[:top_n]
+    # Top N counterparties by suspicious count — also in SQL
+    cp_rows = (
+        query.with_entities(
+            Transaction.counterparty,
+            func.count(Transaction.id).label("cnt"),
+        )
+        .filter(Transaction.status == "suspicious")
+        .group_by(Transaction.counterparty)
+        .order_by(func.count(Transaction.id).desc())
+        .limit(top_n)
+        .all()
+    )
 
     return {
         "count_by_status": status_counts,
         "total_amount_by_status": status_amounts,
         "top_suspicious_counterparties": [
-            {"counterparty": cp, "count": count}
-            for cp, count in top_counterparties
+            {"counterparty": row.counterparty or "unknown", "count": row.cnt}
+            for row in cp_rows
         ],
-        "total_transactions": len(transactions)
+        "total_transactions": total_transactions,
     }
 
 

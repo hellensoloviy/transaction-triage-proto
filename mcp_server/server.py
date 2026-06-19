@@ -27,33 +27,31 @@ server = Server("transaction-triage-mcp")
 
 HTTP_TIMEOUT = float(os.getenv("MCP_HTTP_TIMEOUT", "30.0"))
 
+# Single shared client — avoids TCP handshake overhead on every tool call.
+# Safe here because all async code in this subprocess runs in one event loop.
+_http_client = httpx.AsyncClient(timeout=HTTP_TIMEOUT)
+
 # ── HTTP helper ────────────────────────────────────────────────────────────
 
 async def api_get(path: str, params: dict = None) -> dict:
     """Make a GET request to FastAPI."""
-
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        response = await client.get(f"{API_BASE}{path}", params=params)
-        response.raise_for_status()
-        return response.json()
+    response = await _http_client.get(f"{API_BASE}{path}", params=params)
+    response.raise_for_status()
+    return response.json()
 
 
 async def api_patch(path: str, data: dict) -> dict:
     """Make a PATCH request to FastAPI."""
-
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        response = await client.patch(f"{API_BASE}{path}", json=data)
-        response.raise_for_status()
-        return response.json()
+    response = await _http_client.patch(f"{API_BASE}{path}", json=data)
+    response.raise_for_status()
+    return response.json()
 
 
 async def api_post(path: str, data: dict) -> dict:
     """Make a POST request to FastAPI."""
-
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        response = await client.post(f"{API_BASE}{path}", json=data)
-        response.raise_for_status()
-        return response.json()
+    response = await _http_client.post(f"{API_BASE}{path}", json=data)
+    response.raise_for_status()
+    return response.json()
 
 
 # ── Tool definitions ───────────────────────────────────────────────────────
