@@ -69,19 +69,15 @@ on every `make verify` run, and the error appears in logs exactly as the spec re
 
 ---
 
-## 3. One tradeoff I would revisit
+## 3. One tradeoff I would revisit — resolved
 
-**MCP tool responses return Python dict strings instead of JSON.**
+**MCP tool responses originally returned Python dict strings instead of JSON.**
 
-The MCP server uses Python's default `str()` on dicts when returning data to agents,
-producing strings like `"{'id': '...', 'amount': Decimal('100.00')}"`. The agents parse
-these with `ast.literal_eval()`, which is safe — it only evaluates Python literals, not
-arbitrary code — but it's fragile. It breaks the moment a field contains a single quote
-inside a string value, and it's not cross-language compatible.
+The initial implementation used Python's default `str()` on dicts when returning data to
+agents, producing strings like `"{'id': '...', 'amount': Decimal('100.00')}"`. The agents
+parsed these with `ast.literal_eval()`, which was safe but fragile — it broke on single
+quotes inside field values and was not cross-language compatible.
 
-The right fix is to have the MCP server call `json.dumps()` with a custom encoder for
-`Decimal` and `UUID` types, and have the agents parse with `json.loads()`. That's a
-30-minute refactor touching the server and both agents — straightforward, but I caught
-it late and didn't want to risk breaking working code close to the deadline. I replaced
-the original `eval()` calls with `ast.literal_eval()` as a safe intermediate step, but
-the proper solution is proper JSON throughout.
+This has since been fixed. The MCP server now calls `json.dumps(result, default=str)` for
+all responses (with `default=str` handling `Decimal` and `UUID` types), and both agents
+parse with `json.loads()`. The fragile intermediate step is gone.

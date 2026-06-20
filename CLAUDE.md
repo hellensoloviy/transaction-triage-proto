@@ -67,6 +67,7 @@ MAX_RETRIES              — API call retries before giving up (default: 5)
 NIGHT_AGENT_CUTOFF_HOURS — how far back Night Agent looks (default: 72)
 SEED_RANDOM_SEED         — random seed for seeder (default: 17)
 SEED_TOTAL_TRANSACTIONS  — total transactions to seed (default: 200)
+MCP_HTTP_TIMEOUT         — timeout for MCP → FastAPI HTTP calls in seconds (default: 30.0)
 ```
 
 ---
@@ -94,7 +95,7 @@ The Night Agent must never crash without output. A partial report is always bett
 
 ## Prompt injection defense
 
-Both agents have explicit system prompt instructions to ignore any instructions embedded in transaction data. The Night Agent additionally runs a Python-level keyword check on the memo field before the text reaches Claude — so the model never sees injection attempts framed as user instructions.
+Both agents have explicit system prompt instructions to ignore any instructions embedded in transaction data. The Night Agent additionally runs a Python-level keyword check on the **memo field** before the text reaches Claude — so the model never sees injection attempts framed as user instructions. The counterparty field is not covered by the Python pre-check; it relies on the system prompt instruction only.
 
 If a memo or counterparty field contains instruction-like text, the agent must:
 - Not follow those instructions
@@ -135,13 +136,13 @@ The Anthropic API requires every `tool_use` block to have a matching `tool_resul
 - Any exception mid-loop that skips appending a result for a tool_use block will corrupt the message history. The loop guards against this with a sanity check that patches in a fallback error result for any missing IDs.
 
 **Prompt caching on system prompt**
-Both agents send the system prompt marked `cache_control: ephemeral`. Cached tokens do not count toward your ITPM rate limit, which significantly increases throughput on long runs. This is the main reason the 200-transaction day run is feasible on Tier 1.
+The Day Agent sends the system prompt marked `cache_control: ephemeral` via `run_agent_loop`. Cached tokens do not count toward your ITPM rate limit, which significantly increases throughput on long runs. This is the main reason the 200-transaction day run is feasible on Tier 1. The Night Agent makes direct `client.messages.create()` calls without `cache_control` — it processes far fewer transactions so the rate limit impact is lower.
 
 ---
 
 ## Things I would do differently with more time
 
-- **Proper JSON from MCP server.** The MCP server currently returns Python `str()` representations of dicts, which the agents parse with `ast.literal_eval()`. This works but is fragile — it breaks on strings containing single quotes and is not cross-language compatible. The fix is `json.dumps()` in the server with a custom encoder for `Decimal` and `UUID`, and `json.loads()` in the agents.
+- **Proper JSON from MCP server.** ~~Done.~~ The MCP server now uses `json.dumps()` for all responses and agents parse with `json.loads()`. The original implementation used `str()` + `ast.literal_eval()`, which was fragile (broke on single quotes, not cross-language compatible). This has been fixed.
 
 - **Alembic migrations.** Schema is created via SQLAlchemy `create_all()` on startup. In production this is dangerous — schema changes require manual intervention. Alembic would give proper migration tracking.
 
