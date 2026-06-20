@@ -10,10 +10,15 @@ Runs once overnight. Reviews every `suspicious` transaction from the past `NIGHT
 
 ## Behaviour
 
-1. Calls `list_transactions(status="suspicious", since=<cutoff>)`
-2. For each transaction: fetches it, runs a compliance assessment, updates its status
-3. Runs a Python-level [[prompt-injection]] keyword check on the memo field **before** text reaches Claude
-4. Spawns a report sub-agent with a clean JSON summary of findings
+1. Calls `get_risk_metrics` to get an aggregate overview before processing
+2. Calls `list_transactions(status="suspicious", since=<cutoff>)` to get the review queue
+3. For each transaction:
+   - Fetches full details with `get_transaction`
+   - Raises immediately on zero-amount (exercises [[failure-isolation]] path)
+   - Runs a Python-level [[prompt-injection]] keyword check on the memo field
+   - If injection detected: marks `suspicious`, skips Claude assessment, continues
+   - Otherwise: sends to Claude for assessment, calls `set_transaction_status`
+4. Spawns a report sub-agent (`report-sub-agent`) with a clean JSON summary of findings
 5. Saves the report via `write_report`
 
 ## Never-crash policy
@@ -29,7 +34,7 @@ Short version:
 
 The report writer is a **completely separate** `client.messages.create()` call with its own system prompt and context. It receives only a clean JSON summary — no access to the Night Agent's conversation history.
 
-The sub-agent uses a different `agent_name` (`report-writer`) so it **appends** to `logs/agent_run.jsonl` rather than clearing it.
+The sub-agent logs events under `"agent": "report-sub-agent"` and does not clear the log — only the main Night Agent entry point truncates `logs/agent_run.jsonl` at startup.
 
 ## Output statuses
 

@@ -2,36 +2,23 @@
 tags: [adr, technical-debt]
 ---
 
-# ADR-003 — MCP Response Parsing with `ast.literal_eval`
+# ADR-003 — MCP Response Parsing
 
-## Current state
+## Current state (resolved)
 
-The [[mcp-server]] returns Python `str()` representations of dicts when sending data back to agents, e.g.:
+The MCP server returns `json.dumps(result)` for all tool responses. Both agents parse responses with `json.loads()`. This is the correct, cross-language-compatible approach.
 
-```
-{'id': 'abc-123', 'amount': Decimal('100.00'), 'status': 'pending'}
-```
+## History
 
-Agents parse these with `ast.literal_eval()`, which is safe (evaluates Python literals only, not arbitrary code).
+The original implementation used Python's default `str()` on response dicts, producing strings like `{'id': '...', 'amount': Decimal('100.00')}`. Agents initially parsed these with `eval()`, then `ast.literal_eval()` as a safer intermediate step.
 
-## Why not `json.loads()`
+The `ast.literal_eval()` approach was fragile in two ways:
+- It would break on any string field containing a single quote (e.g. `"counterparty": "O'Brien"`)
+- It was not cross-language compatible
 
-The server was built using Python's default `str()` on response dicts. `Decimal` and `UUID` types are not JSON-serialisable without a custom encoder, and the fix was caught late.
+## Resolution
 
-`ast.literal_eval()` was substituted for the original `eval()` as a safe intermediate step.
-
-## Known fragility
-
-- Breaks if any string field contains a single quote (e.g. `"counterparty": "O'Brien"`)
-- Not cross-language compatible — a non-Python client cannot parse these responses
-
-## Correct fix
-
-Replace `str()` with `json.dumps(obj, default=str)` (or a custom encoder for `Decimal`/`UUID`) in the MCP server. Replace `ast.literal_eval()` with `json.loads()` in both agents. This is a ~30-minute change touching three files.
-
-## Why not fixed yet
-
-It was caught late and the working system was not changed close to a deadline. The fix is straightforward and low-risk but would need a full re-test cycle.
+The MCP server was updated to use `json.dumps(result, default=str)` which serialises `Decimal` and `UUID` types via their `str()` representation. Agents now use `json.loads()`. CLAUDE.md describes the old `ast.literal_eval()` state — the code has since been updated.
 
 ## Related
 - [[mcp-server]]
